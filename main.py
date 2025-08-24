@@ -11,6 +11,16 @@ from typing import List, Dict, Optional
 import threading
 from datetime import datetime, timedelta
 
+# Import the complete proxy list
+try:
+    from proxy_list_complete import PROXY_LIST
+except ImportError:
+    # Fallback proxy list if the file is not found
+    PROXY_LIST = [
+        {"http": "http://8.210.83.33:80", "https": "http://8.210.83.33:80"},
+        {"http": "http://47.74.152.29:8888", "https": "http://47.74.152.29:8888"},
+    ]
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -20,50 +30,77 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-class EnhancedJinaProxyAPI:
-    """Enhanced Jina AI Proxy API with advanced features"""
+class UltraEnhancedJinaProxyAPI:
+    """Ultra Enhanced Jina AI Proxy API with 180+ proxy rotation"""
 
     def __init__(self):
-        self.free_proxies = self._load_proxy_list()
+        self.free_proxies = PROXY_LIST  # Use complete proxy list
         self.working_proxies = []
         self.failed_proxies = []
         self.proxy_test_results = {}
         self.request_count = 0
+        self.successful_requests = 0
+        self.failed_requests = 0
         self.start_time = datetime.now()
+        self.current_proxy_index = 0
 
         # Jina AI endpoints
         self.jina_reader_url = "https://r.jina.ai/"
         self.jina_search_url = "https://s.jina.ai/"
 
-        # Rate limiting
+        # Rate limiting and performance tracking
         self.rate_limiter = {}
+        self.proxy_performance = {}
+        self.last_proxy_test = None
 
-        # Initialize proxy testing
+        logger.info(f"Initialized with {len(self.free_proxies)} total proxies")
+
+        # Initialize proxy testing in background
         self._initialize_proxies()
 
-    def _load_proxy_list(self) -> List[Dict[str, str]]:
-        """Load proxy list - can be expanded to fetch from multiple sources"""
-        return [
-            {"http": "http://8.210.83.33:80", "https": "http://8.210.83.33:80"},
-            {"http": "http://103.167.134.31:80", "https": "http://103.167.134.31:80"},
-            {"http": "http://185.217.143.96:80", "https": "http://185.217.143.96:80"},
-            {"http": "http://47.88.3.19:8080", "https": "http://47.88.3.19:8080"},
-            {"http": "http://20.205.61.143:80", "https": "http://20.205.61.143:80"},
-        ]
-
     def _initialize_proxies(self):
-        """Test initial proxy list and populate working proxies"""
-        logger.info("Initializing and testing proxy list...")
+        """Test initial proxy list and populate working proxies (faster initialization)"""
+        logger.info("Initializing proxy pool...")
 
-        for proxy in self.free_proxies:
-            if self._test_proxy(proxy):
+        # Test a subset initially for faster startup
+        test_proxies = self.free_proxies[:20]  # Test first 20 for quick start
+
+        for proxy in test_proxies:
+            if self._test_proxy(proxy, timeout=5):  # Shorter timeout for init
                 self.working_proxies.append(proxy)
-                logger.info(f"Proxy working: {proxy['http']}")
+                self.proxy_performance[str(proxy)] = {"success": 1, "total": 1}
+                logger.info(f"✓ Proxy working: {proxy['http']}")
             else:
                 self.failed_proxies.append(proxy)
-                logger.warning(f"Proxy failed: {proxy['http']}")
 
-        logger.info(f"Initialized {len(self.working_proxies)} working proxies out of {len(self.free_proxies)}")
+        # Add remaining untested proxies to working list (will be tested on use)
+        remaining_proxies = self.free_proxies[20:]
+        self.working_proxies.extend(remaining_proxies)
+
+        logger.info(f"Quick init complete: {len(self.working_proxies)} proxies available")
+
+        # Schedule background testing of remaining proxies
+        threading.Thread(target=self._background_proxy_testing, daemon=True).start()
+
+    def _background_proxy_testing(self):
+        """Test remaining proxies in background"""
+        logger.info("Starting background proxy testing...")
+
+        for proxy in self.free_proxies[20:]:
+            if proxy not in self.working_proxies and proxy not in self.failed_proxies:
+                if self._test_proxy(proxy, timeout=10):
+                    if proxy not in self.working_proxies:
+                        self.working_proxies.append(proxy)
+                        self.proxy_performance[str(proxy)] = {"success": 1, "total": 1}
+                else:
+                    if proxy in self.working_proxies:
+                        self.working_proxies.remove(proxy)
+                    if proxy not in self.failed_proxies:
+                        self.failed_proxies.append(proxy)
+
+                time.sleep(0.5)  # Small delay between tests
+
+        logger.info(f"Background testing complete: {len(self.working_proxies)} working proxies")
 
     def _test_proxy(self, proxy: Dict[str, str], timeout: int = 10) -> bool:
         """Test if a proxy is working"""
@@ -83,10 +120,12 @@ class EnhancedJinaProxyAPI:
     def _get_random_headers(self) -> Dict[str, str]:
         """Get randomized headers to avoid detection"""
         user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/121.0'
         ]
 
         return {
@@ -97,73 +136,109 @@ class EnhancedJinaProxyAPI:
             'DNT': '1',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Cache-Control': 'max-age=0'
         }
 
-    def _get_working_proxy(self) -> Optional[Dict[str, str]]:
-        """Get a working proxy with rotation"""
+    def _get_next_proxy(self) -> Optional[Dict[str, str]]:
+        """Get next proxy using round-robin rotation"""
         if not self.working_proxies:
             logger.warning("No working proxies available")
             return None
 
-        return random.choice(self.working_proxies)
+        # Round-robin selection
+        proxy = self.working_proxies[self.current_proxy_index % len(self.working_proxies)]
+        self.current_proxy_index += 1
 
-    def _make_request_with_fallback(self, url: str, max_retries: int = 3) -> requests.Response:
-        """Make request with proxy fallback and error handling"""
+        return proxy
+
+    def _update_proxy_performance(self, proxy: Dict[str, str], success: bool):
+        """Update proxy performance statistics"""
+        proxy_key = str(proxy)
+        if proxy_key not in self.proxy_performance:
+            self.proxy_performance[proxy_key] = {"success": 0, "total": 0}
+
+        self.proxy_performance[proxy_key]["total"] += 1
+        if success:
+            self.proxy_performance[proxy_key]["success"] += 1
+
+        # Remove consistently failing proxies
+        perf = self.proxy_performance[proxy_key]
+        if perf["total"] >= 5 and perf["success"] / perf["total"] < 0.2:  # Less than 20% success rate
+            if proxy in self.working_proxies:
+                self.working_proxies.remove(proxy)
+                self.failed_proxies.append(proxy)
+                logger.info(f"Removed failing proxy: {proxy['http']}")
+
+    def _make_request_with_smart_rotation(self, url: str, max_retries: int = 5) -> requests.Response:
+        """Make request with intelligent proxy rotation and fallback"""
         self.request_count += 1
 
-        # Try with proxies first
+        # Try with multiple proxies using smart rotation
         for attempt in range(max_retries):
-            proxy = self._get_working_proxy()
+            proxy = self._get_next_proxy()
             if proxy:
                 try:
                     headers = self._get_random_headers()
+
+                    # Add random delay to avoid rate limiting
+                    time.sleep(random.uniform(0.1, 0.5))
+
                     response = requests.get(
                         url,
                         proxies=proxy,
                         headers=headers,
-                        timeout=30,
+                        timeout=25,
                         verify=False
                     )
 
                     if response.status_code == 200:
-                        logger.info(f"Request successful with proxy: {proxy['http']}")
+                        self._update_proxy_performance(proxy, True)
+                        self.successful_requests += 1
+                        logger.info(f"✓ Request successful with proxy: {proxy['http']}")
                         return response
+                    else:
+                        self._update_proxy_performance(proxy, False)
+                        logger.warning(f"Proxy returned status {response.status_code}: {proxy['http']}")
 
                 except Exception as e:
+                    self._update_proxy_performance(proxy, False)
                     logger.warning(f"Request failed with proxy {proxy['http']}: {str(e)}")
-                    # Remove failed proxy from working list
-                    if proxy in self.working_proxies:
-                        self.working_proxies.remove(proxy)
-                        self.failed_proxies.append(proxy)
 
                 # Add delay between proxy attempts
-                time.sleep(random.uniform(1, 3))
+                time.sleep(random.uniform(0.5, 1.5))
 
         # If all proxies fail, try direct connection
         try:
             logger.info("Attempting direct connection (no proxy)")
             headers = self._get_random_headers()
             response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code == 200:
+                self.successful_requests += 1
             return response
         except Exception as e:
+            self.failed_requests += 1
             logger.error(f"Direct connection also failed: {str(e)}")
             raise e
 
     def search_web(self, query: str) -> Dict:
-        """Search the web using Jina AI search endpoint"""
+        """Enhanced web search using Jina AI with smart proxy rotation"""
         try:
             encoded_query = quote_plus(query)
-            search_url = f"{self.jina_search_url}?q={encoded_query}"
+            search_url = f"{self.jina_search_url}{encoded_query}"
 
-            response = self._make_request_with_fallback(search_url)
+            response = self._make_request_with_smart_rotation(search_url)
 
             return {
                 "success": True,
                 "query": query,
-                "content": response.text,
+                "content": response.text[:10000],  # Limit content size
+                "content_length": len(response.text),
                 "status_code": response.status_code,
                 "source": "jina_search",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "proxy_used": "rotated"
             }
 
         except Exception as e:
@@ -176,18 +251,20 @@ class EnhancedJinaProxyAPI:
             }
 
     def read_url(self, url: str) -> Dict:
-        """Read URL content using Jina AI reader endpoint"""
+        """Enhanced URL reading using Jina AI with smart proxy rotation"""
         try:
             reader_url = f"{self.jina_reader_url}{url}"
-            response = self._make_request_with_fallback(reader_url)
+            response = self._make_request_with_smart_rotation(reader_url)
 
             return {
                 "success": True,
                 "url": url,
-                "content": response.text,
+                "content": response.text[:15000],  # Limit content size
+                "content_length": len(response.text),
                 "status_code": response.status_code,
                 "source": "jina_reader",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "proxy_used": "rotated"
             }
 
         except Exception as e:
@@ -199,84 +276,105 @@ class EnhancedJinaProxyAPI:
                 "timestamp": datetime.now().isoformat()
             }
 
-    def get_stats(self) -> Dict:
-        """Get API statistics"""
+    def get_comprehensive_stats(self) -> Dict:
+        """Get comprehensive API and proxy statistics"""
         uptime = datetime.now() - self.start_time
+        success_rate = (self.successful_requests / max(self.request_count, 1)) * 100
+
+        # Get top performing proxies
+        top_proxies = []
+        for proxy_key, stats in list(self.proxy_performance.items())[:5]:
+            if stats["total"] > 0:
+                success_pct = (stats["success"] / stats["total"]) * 100
+                top_proxies.append({
+                    "proxy": proxy_key,
+                    "success_rate": f"{success_pct:.1f}%",
+                    "total_requests": stats["total"]
+                })
+
         return {
             "uptime_seconds": int(uptime.total_seconds()),
             "total_requests": self.request_count,
-            "working_proxies": len(self.working_proxies),
-            "failed_proxies": len(self.failed_proxies),
-            "total_proxies": len(self.free_proxies),
-            "success_rate": f"{(len(self.working_proxies) / len(self.free_proxies) * 100):.1f}%" if self.free_proxies else "0%"
+            "successful_requests": self.successful_requests,
+            "failed_requests": self.failed_requests,
+            "success_rate": f"{success_rate:.1f}%",
+            "proxy_stats": {
+                "total_proxies": len(self.free_proxies),
+                "working_proxies": len(self.working_proxies),
+                "failed_proxies": len(self.failed_proxies),
+                "proxy_pool_health": f"{(len(self.working_proxies) / len(self.free_proxies) * 100):.1f}%"
+            },
+            "top_performing_proxies": top_proxies,
+            "current_proxy_index": self.current_proxy_index % len(self.working_proxies) if self.working_proxies else 0
         }
 
-# Initialize the enhanced API
-jina_api = EnhancedJinaProxyAPI()
+# Initialize the ultra-enhanced API
+jina_api = UltraEnhancedJinaProxyAPI()
 
 @app.route('/', methods=['GET'])
 def home():
-    """Enhanced home endpoint with comprehensive API documentation"""
+    """Enhanced home endpoint with comprehensive documentation"""
+    stats = jina_api.get_comprehensive_stats()
+
     return jsonify({
-        "service": "Jina AI Proxy API",
-        "version": "2.0.0",
-        "description": "A proxy-enabled API wrapper for Jina AI search and reader services",
+        "service": "Ultra Enhanced Jina AI Proxy API",
+        "version": "3.0.0",
+        "description": "Advanced proxy-enabled API wrapper for Jina AI with 180+ proxy rotation",
         "features": [
-            "Automatic proxy rotation",
-            "Fallback to direct connection",
-            "Request statistics",
-            "Health monitoring",
-            "Rate limiting protection"
+            f"{len(PROXY_LIST)} proxy rotation pool",
+            "Smart proxy performance tracking",
+            "Automatic failing proxy removal",
+            "Background proxy health testing",
+            "Round-robin proxy selection",
+            "Advanced rate limiting protection",
+            "Comprehensive statistics",
+            "Real-time health monitoring"
         ],
         "endpoints": {
-            "/": "API documentation (this page)",
-            "/search": "POST - Search the web using Jina AI",
-            "/read": "POST - Read URL content using Jina AI",
+            "/": "API documentation and statistics",
+            "/search": "POST - Web search with proxy rotation",
+            "/read": "POST - URL content extraction with proxy rotation",
             "/combined": "POST - Search and read multiple URLs",
-            "/health": "GET - Health check and statistics",
-            "/stats": "GET - Detailed API statistics"
+            "/health": "GET - Quick health check",
+            "/stats": "GET - Comprehensive statistics",
+            "/proxy-stats": "GET - Detailed proxy performance"
         },
+        "current_stats": stats,
         "usage_examples": {
             "search": {
                 "method": "POST",
-                "url": "/search",
-                "body": {"query": "latest AI developments"},
-                "curl": "curl -X POST -H 'Content-Type: application/json' -d '{"query":"AI news"}' http://your-api-url/search"
+                "endpoint": "/search",
+                "body": {"query": "latest technology trends 2025"},
+                "description": "Search the web using Jina AI with automatic proxy rotation"
             },
             "read": {
-                "method": "POST", 
-                "url": "/read",
-                "body": {"url": "https://example.com"},
-                "curl": "curl -X POST -H 'Content-Type: application/json' -d '{"url":"https://example.com"}' http://your-api-url/read"
+                "method": "POST",
+                "endpoint": "/read", 
+                "body": {"url": "https://techcrunch.com"},
+                "description": "Extract clean content from any URL"
             }
-        },
-        "stats": jina_api.get_stats()
+        }
     })
 
 @app.route('/search', methods=['POST'])
 def search_endpoint():
-    """Enhanced search endpoint with validation and logging"""
+    """Ultra-enhanced search endpoint"""
     try:
         data = request.get_json()
 
-        if not data:
+        if not data or 'query' not in data or not data['query'].strip():
             return jsonify({
                 "success": False,
-                "error": "No JSON data provided"
-            }), 400
-
-        if 'query' not in data or not data['query'].strip():
-            return jsonify({
-                "success": False,
-                "error": "Missing or empty 'query' field"
+                "error": "Missing or empty 'query' field",
+                "example": {"query": "artificial intelligence news"}
             }), 400
 
         query = data['query'].strip()
-        logger.info(f"Search request for: {query}")
+        logger.info(f"🔍 Search request: {query}")
 
         result = jina_api.search_web(query)
-
         status_code = 200 if result['success'] else 500
+
         return jsonify(result), status_code
 
     except Exception as e:
@@ -289,36 +387,30 @@ def search_endpoint():
 
 @app.route('/read', methods=['POST'])
 def read_endpoint():
-    """Enhanced read endpoint with URL validation"""
+    """Ultra-enhanced read endpoint"""
     try:
         data = request.get_json()
 
-        if not data:
+        if not data or 'url' not in data or not data['url'].strip():
             return jsonify({
                 "success": False,
-                "error": "No JSON data provided"
-            }), 400
-
-        if 'url' not in data or not data['url'].strip():
-            return jsonify({
-                "success": False,
-                "error": "Missing or empty 'url' field"
+                "error": "Missing or empty 'url' field",
+                "example": {"url": "https://example.com"}
             }), 400
 
         url = data['url'].strip()
 
-        # Enhanced URL validation
         if not url.startswith(('http://', 'https://')):
             return jsonify({
                 "success": False,
                 "error": "URL must start with http:// or https://"
             }), 400
 
-        logger.info(f"Read request for: {url}")
+        logger.info(f"📄 Read request: {url}")
 
         result = jina_api.read_url(url)
-
         status_code = 200 if result['success'] else 500
+
         return jsonify(result), status_code
 
     except Exception as e:
@@ -329,59 +421,128 @@ def read_endpoint():
             "timestamp": datetime.now().isoformat()
         }), 500
 
+@app.route('/combined', methods=['POST'])
+def combined_endpoint():
+    """Enhanced combined search and read endpoint"""
+    try:
+        data = request.get_json()
+
+        if not data or 'query' not in data:
+            return jsonify({
+                "success": False,
+                "error": "Missing 'query' field"
+            }), 400
+
+        query = data['query'].strip()
+        urls_to_read = data.get('urls', [])
+        max_urls = min(data.get('max_urls', 3), 10)  # Limit to max 10 URLs
+
+        logger.info(f"🔍📄 Combined request: {query} + {len(urls_to_read)} URLs")
+
+        # Search first
+        search_result = jina_api.search_web(query)
+
+        results = {
+            "success": True,
+            "query": query,
+            "search_result": search_result,
+            "url_contents": [],
+            "timestamp": datetime.now().isoformat()
+        }
+
+        # Read URLs if provided
+        for url in urls_to_read[:max_urls]:
+            url_result = jina_api.read_url(url)
+            results["url_contents"].append(url_result)
+            time.sleep(0.5)  # Small delay between URL reads
+
+        return jsonify(results)
+
+    except Exception as e:
+        logger.error(f"Combined endpoint error: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": f"Internal server error: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Enhanced health check with detailed information"""
-    stats = jina_api.get_stats()
+    """Quick health check"""
+    stats = jina_api.get_comprehensive_stats()
 
     # Determine health status
-    health_status = "healthy"
-    if stats['working_proxies'] == 0:
-        health_status = "degraded"
+    if stats['proxy_stats']['working_proxies'] > 10:
+        status = "excellent"
+    elif stats['proxy_stats']['working_proxies'] > 5:
+        status = "good"
+    elif stats['proxy_stats']['working_proxies'] > 0:
+        status = "degraded"
+    else:
+        status = "critical"
 
     return jsonify({
-        "status": health_status,
+        "status": status,
         "timestamp": datetime.now().isoformat(),
-        "service": "Jina AI Proxy API v2.0",
-        "stats": stats
+        "service": "Ultra Enhanced Jina AI Proxy API v3.0",
+        "quick_stats": {
+            "working_proxies": stats['proxy_stats']['working_proxies'],
+            "total_requests": stats['total_requests'],
+            "success_rate": stats['success_rate'],
+            "uptime_hours": round(stats['uptime_seconds'] / 3600, 1)
+        }
     })
 
 @app.route('/stats', methods=['GET'])
 def get_stats():
-    """Detailed statistics endpoint"""
+    """Comprehensive statistics endpoint"""
     return jsonify({
-        "service_stats": jina_api.get_stats(),
-        "proxy_details": {
-            "working_count": len(jina_api.working_proxies),
-            "failed_count": len(jina_api.failed_proxies),
-            "working_proxies": [p['http'] for p in jina_api.working_proxies[:5]],  # Show first 5
-            "last_updated": datetime.now().isoformat()
+        "comprehensive_stats": jina_api.get_comprehensive_stats(),
+        "service_info": {
+            "version": "3.0.0",
+            "proxy_pool_size": len(PROXY_LIST),
+            "features": [
+                "180+ proxy rotation",
+                "Smart performance tracking",
+                "Auto-scaling proxy pool",
+                "Background health monitoring"
+            ]
         }
     })
 
-@app.errorhandler(404)
-def not_found(error):
-    """Custom 404 handler"""
-    return jsonify({
-        "success": False,
-        "error": "Endpoint not found",
-        "available_endpoints": ["/", "/search", "/read", "/health", "/stats"]
-    }), 404
+@app.route('/proxy-stats', methods=['GET'])
+def get_proxy_stats():
+    """Detailed proxy performance statistics"""
+    proxy_details = []
 
-@app.errorhandler(500)
-def internal_error(error):
-    """Custom 500 handler"""
+    for proxy_key, stats in list(jina_api.proxy_performance.items())[:20]:  # Top 20
+        if stats["total"] > 0:
+            success_rate = (stats["success"] / stats["total"]) * 100
+            proxy_details.append({
+                "proxy": proxy_key.replace("{'http': 'http://", "").replace("', 'https': 'http://", " -> ").replace("'}", ""),
+                "success_rate": f"{success_rate:.1f}%",
+                "successful_requests": stats["success"],
+                "total_requests": stats["total"],
+                "status": "active" if success_rate > 50 else "poor"
+            })
+
     return jsonify({
-        "success": False,
-        "error": "Internal server error",
-        "message": "Please try again later or contact support"
-    }), 500
+        "proxy_performance": proxy_details,
+        "summary": {
+            "total_proxies_loaded": len(PROXY_LIST),
+            "currently_working": len(jina_api.working_proxies),
+            "currently_failed": len(jina_api.failed_proxies),
+            "tested_proxies": len(jina_api.proxy_performance),
+            "rotation_index": jina_api.current_proxy_index
+        }
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
 
-    logger.info(f"Starting Jina AI Proxy API on port {port}")
-    logger.info(f"Debug mode: {debug}")
+    logger.info(f"🚀 Starting Ultra Enhanced Jina AI Proxy API")
+    logger.info(f"📊 Loaded {len(PROXY_LIST)} proxies")
+    logger.info(f"🌐 Server starting on port {port}")
 
     app.run(host='0.0.0.0', port=port, debug=debug)
